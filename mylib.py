@@ -1,12 +1,10 @@
 # encoding=utf-8
 import os
-from typing import List
-import include
+from typing import Iterator, List
+import mmap
 from include import *
-
-TABLESPACE_NAME = "D:\\mysql_data\\test\\t.ibd"
-VARIABLE_FIELD_COUNT = 1
-NULL_FIELD_COUNT = 0
+import struct
+from collections import namedtuple
 
 
 class myargv(object):
@@ -53,20 +51,90 @@ def mach_read_from_n(page: bytes, start_offset: int, length: int) -> str:
     return ret.hex()
 
 
-def get_innodb_page_type(myargv):
-    f = open(myargv.tablespace, "rb")
-    fsize = os.path.getsize(f.name) // INNODB_PAGE_SIZE
+# https://dev.mysql.com/doc/internals/en/innodb-fil-header.html
+FilHeader = namedtuple(
+    "FilHeader",
+    "FIL_PAGE_SPACE FIL_PAGE_OFFSET FIL_PAGE_PREV FIL_PAGE_NEXT FIL_PAGE_LSN "
+    "FIL_PAGE_TYPE FIL_PAGE_FILE_FLUSH_LSN FIL_PAGE_ARCH_LOG_NO",
+)
+FilHeaderStruct = struct.Struct(">IIIIQHQI")
+
+
+def decode_fil_header(raw_page: bytes) -> FilHeader:
+    return FilHeader._make(FilHeaderStruct.unpack_from(raw_page, 0))
+
+
+# https://dev.mysql.com/doc/internals/en/innodb-page-header.html
+PageHeader = namedtuple(
+    "PageHeader",
+    "PAGE_N_DIR_SLOTS PAGE_HEAP_TOP PAGE_N_HEAP PAGE_FREE PAGE_GARBAGE PAGE_LAST_INSERT "
+    "PAGE_DIRECTION PAGE_N_DIRECTION PAGE_N_RECS PAGE_MAX_TRX_ID PAGE_LEVEL "
+    "PAGE_INDEX_ID PAGE_BTR_SEG_LEAF PAGE_BTR_SEG_TOP",
+)
+PageHeaderStruct = struct.Struct(">HHHHHHHHHQHQ10s10s")
+
+
+def decode_page_header(raw_page: bytes) -> PageHeader:
+    # Page header is right after file headers
+    return PageHeader._make(
+        PageHeaderStruct.unpack_from(raw_page, FilHeaderStruct.size)
+    )
+
+
+class InnoDBPage:
+    """Wrapper around an InnoDB 16kB page.
+    https://blog.jcole.us/2013/01/07/the-physical-structure-of-innodb-index-pages/
+    https://dev.mysql.com/doc/internals/en/innodb-fil-header.html
+    https://gitee.com/jink2005/percona-data-recovery-tool-for-innodb/blob/master/page_parser.c
+    http://assets.en.oreilly.com/1/event/36/Recovery%20of%20Lost%20or%20Corrupted%20InnoDB%20Tables%20Presentation.pdf
+    """
+
+    def __init__(self, raw_content: bytes) -> None:
+        self.raw_content = raw_content
+        self.fil_header = decode_fil_header(raw_content)
+        self.page_header = decode_page_header(raw_content)
+
+    def get_offset(self) -> str:
+        return self.fil_header.FIL_PAGE_OFFSET
+
+    def get_type(self) -> str:
+        return self.fil_header.FIL_PAGE_TYPE
+
+    def get_level(self) -> str:
+        return self.page_header.PAGE_LEVEL
+
+
+class InnoDBFile:
+    """Wrapper around an InnoDB file (.ibd)."""
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+
+    def get_pages(self) -> Iterator[InnoDBPage]:
+        with open(self.filename, "rb") as file_obj:
+            fsize = os.path.getsize(file_obj.name) // INNODB_PAGE_SIZE
+            with mmap.mmap(
+                file_obj.fileno(), length=0, access=mmap.ACCESS_READ
+            ) as mmap_obj:
+                for _ in range(fsize):
+                    page = InnoDBPage(mmap_obj.read(INNODB_PAGE_SIZE))
+                    yield page
+
+
+def get_innodb_page_type(args):
+    data_file = InnoDBFile(args.tablespace)
     ret = {}
-    for i in range(fsize):
-        page = f.read(INNODB_PAGE_SIZE)
-        page_offset = mach_read_from_n(page, FIL_PAGE_OFFSET, 4)
-        page_type = mach_read_from_n(page, FIL_PAGE_TYPE, 2)
-        if "-v" in myargv.parms:
-            if page_type == "45bf":
-                page_level = mach_read_from_n(page, FIL_PAGE_DATA + PAGE_LEVEL, 2)
+    nb_pages = 0
+    for page in data_file.get_pages():
+        nb_pages += 1
+        page_offset = page.get_offset()
+        page_type = page.get_type()
+        if "-v" in args.parms:
+            if page_type == 0x45BF:
+                page_level = page.get_level()
                 print(
-                    "page offset %s, page type <%s>, page level <%s>"
-                    % (page_offset, innodb_page_type[page_type], page_level)
+                    f"page offset {page_offset}, page type <{innodb_page_type[page_type]}>, page level <{page_level}>"
+                    f" - heap top: {page.page_header.PAGE_HEAP_TOP}; heap records: {page.page_header.PAGE_N_HEAP}; records: {page.page_header.PAGE_N_RECS}"
                 )
             else:
                 print(
@@ -77,6 +145,6 @@ def get_innodb_page_type(myargv):
             ret[page_type] = 1
         else:
             ret[page_type] = ret[page_type] + 1
-    print("Total number of page: %d:" % fsize)
+    print("Total number of page: %d:" % nb_pages)
     for k, v in ret.items():
         print("%s: %s" % (innodb_page_type[k], v))
