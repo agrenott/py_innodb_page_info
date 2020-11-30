@@ -1,2 +1,5 @@
 
 server_cost.ibd
+.venv*/
+*.pyc
+.vscode/

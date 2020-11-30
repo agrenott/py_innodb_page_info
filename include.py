@@ -21,19 +21,19 @@ TRX_UNDO_PAGE_HDR = FSEG_PAGE_DATA
 PAGE_LEVEL = 26	#level of the node in an index tree; the leaf level is the level 0 */
 				
 innodb_page_type={
-	'0000':u'Freshly Allocated Page',
-	'0002':u'Undo Log Page',
-	'0003':u'File Segment inode',
-	'0004':u'Insert Buffer Free List',
-	'0005':u'Insert Buffer Bitmap',
-	'0006':u'System Page',
-	'0007':u'Transaction system Page',
-	'0008':u'File Space Header',
-	'0009':u'extend description page',
-	'000a':u'Uncompressed BLOB Page',
-	'000b':u'1st compressed BLOB Page',
-	'000c':u'Subsequent compressed BLOB Page',
-	'45bf':u'B-tree Node'
+	'0000':'Freshly Allocated Page',
+	'0002':'Undo Log Page',
+	'0003':'File Segment inode',
+	'0004':'Insert Buffer Free List',
+	'0005':'Insert Buffer Bitmap',
+	'0006':'System Page',
+	'0007':'Transaction system Page',
+	'0008':'File Space Header',
+	'0009':'extend description page',
+	'000a':'Uncompressed BLOB Page',
+	'000b':'1st compressed BLOB Page',
+	'000c':'Subsequent compressed BLOB Page',
+	'45bf':'B-tree Node'
 	}
 	
 innodb_page_direction={
