@@ -81,6 +81,36 @@ def decode_page_header(raw_page: bytes) -> PageHeader:
     )
 
 
+NewRecordHeader = namedtuple(
+    "NewRecordHeader",
+    "INFO_BITS NEXT",
+)
+NewRecordHeaderStruct = struct.Struct(">3sh")
+
+
+def decode_new_record_header(raw_page: bytes, record_offset: int) -> NewRecordHeader:
+    # Page header is right after file headers
+    return NewRecordHeader._make(
+        NewRecordHeaderStruct.unpack_from(
+            raw_page, record_offset - REC_N_NEW_EXTRA_BYTES
+        )
+    )
+
+
+class InnoDBRecord:
+    """Single record, with associated header.
+    https://github.com/mysql/mysql-server/blob/ee4455a33b10f1b1886044322e4893f587b319ed/storage/innobase/rem/rem0rec.cc
+    """
+
+    def __init__(self, raw_page: bytes, offset: int) -> None:
+        """Instanciate record from a given page & offset.
+        Offset points to the beginning or record's data (ie. past the header).
+        """
+        self.raw_page = raw_page
+        self.offset = offset
+        self.header = decode_new_record_header(raw_page, offset)
+
+
 class InnoDBPage:
     """Wrapper around an InnoDB 16kB page.
     https://blog.jcole.us/2013/01/07/the-physical-structure-of-innodb-index-pages/
@@ -102,6 +132,34 @@ class InnoDBPage:
 
     def get_level(self) -> str:
         return self.page_header.PAGE_LEVEL
+
+    def is_compact(self) -> bool:
+        """Return true if page is using COMPACT mode.
+        Extracted from first bit of PAGE_N_HEAP.
+        """
+        return self.page_header.PAGE_N_HEAP & 0x8000 != 0
+
+    def get_infinum_offset(self) -> int:
+        """Get the offset of the infinum record according to the page type."""
+        if self.is_compact():
+            return PAGE_NEW_INFIMUM
+        return PAGE_OLD_INFIMUM
+
+    def get_records(self) -> Iterator[InnoDBRecord]:
+        """Return iterator of page's user records."""
+        # Get static infimum record
+        if self.page_header.PAGE_N_RECS:
+            # Walk through the single-linked chain of records, sorted by primary key
+            offset = self.get_infinum_offset()
+            assert self.raw_content[offset : offset + 7] == b"infimum"
+            record = InnoDBRecord(self.raw_content, offset)
+            while record.header.NEXT:
+                # NEXT is relative to current record's offset - which can be negative
+                # print(f"{record.offset} + {record.header.NEXT}")
+                record = InnoDBRecord(
+                    self.raw_content, record.offset + record.header.NEXT
+                )
+                yield record
 
 
 class InnoDBFile:
@@ -134,13 +192,15 @@ def get_innodb_page_type(args):
                 page_level = page.get_level()
                 print(
                     f"page offset {page_offset}, page type <{innodb_page_type[page_type]}>, page level <{page_level}>"
-                    f" - heap top: {page.page_header.PAGE_HEAP_TOP}; heap records: {page.page_header.PAGE_N_HEAP}; records: {page.page_header.PAGE_N_RECS}"
+                    f" - heap top: {page.page_header.PAGE_HEAP_TOP}; heap records: {page.page_header.PAGE_N_HEAP}; records: {page.page_header.PAGE_N_RECS}; compact: {page.is_compact()}"
                 )
             else:
                 print(
                     "page offset %s, page type <%s>"
                     % (page_offset, innodb_page_type[page_type])
                 )
+            for record in page.get_records():
+                print(f"{record}")
         if page_type not in ret:
             ret[page_type] = 1
         else:
